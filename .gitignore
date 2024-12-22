@@ -1,0 +1,61 @@
+# Flutter/Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+
+# Build dosyaları
+build/
+android/.gradle/
+android/app/debug/
+android/app/profile/
+android/app/release/
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Generated.xcconfig
+ios/Flutter/flutter_export_environment.sh
+
+# Çeşitli log ve geçici dosyalar
+*.log
+*.lock
+*.tmp
+
+# IDE dosyaları
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+
+# Çalışma alanına özel dosyalar
+.DS_Store
+.env
+*.orig
+
+# MacOS ve Linux sistem dosyaları
+macos/Flutter/ephemeral/
+linux/flutter/ephemeral/
+*.pyc
+
+# Windows dosyaları
+Thumbs.db
+desktop/Flutter/ephemeral/
+
+# Asset dosyaları
+AssetManifest.json
+FontManifest.json
+NOTICES
+*.apk
+*.jks
+*.p12
+
+# Test dosyaları
+test/output/
+test/tmp/
+
+# Diğer
+# Sentry veya özel hata izleme dosyaları varsa ekle:
+# *.sentry-debug-meta
+coverage/

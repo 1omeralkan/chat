@@ -62,28 +62,25 @@ class ChatListScreen extends StatelessWidget {
                 },
               ),
               const SizedBox(height: 16),
-              if (isGroup) ...[
-                TextField(
-                  controller: chatNameController,
-                  decoration: const InputDecoration(
-                    labelText: 'Grup Adı',
-                    border: OutlineInputBorder(),
-                    hintText: 'Örn: Aile Grubu, İş Arkadaşları...',
-                  ),
-                  autofocus: true,
+              TextField(
+                controller: chatNameController,
+                decoration: const InputDecoration(
+                  labelText: 'Sohbet Adı',
+                  border: OutlineInputBorder(),
+                  hintText: 'Sohbet için bir isim girin',
                 ),
-              ] else ...[
-                TextField(
-                  controller: emailController,
-                  decoration: const InputDecoration(
-                    labelText: 'Karşı Kullanıcının E-postası',
-                    border: OutlineInputBorder(),
-                    hintText: 'ornek@email.com',
-                  ),
-                  keyboardType: TextInputType.emailAddress,
-                  autofocus: true,
+                autofocus: true,
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: emailController,
+                decoration: const InputDecoration(
+                  labelText: 'Karşı Kullanıcının E-postası',
+                  border: OutlineInputBorder(),
+                  hintText: 'ornek@email.com',
                 ),
-              ],
+                keyboardType: TextInputType.emailAddress,
+              ),
             ],
           ),
           actions: [
@@ -93,15 +90,15 @@ class ChatListScreen extends StatelessWidget {
             ),
             ElevatedButton(
               onPressed: () async {
-                if (isGroup) {
-                  final chatName = chatNameController.text.trim();
-                  if (chatName.isEmpty) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Grup adı boş olamaz')),
-                    );
-                    return;
-                  }
-                } else {
+                final chatName = chatNameController.text.trim();
+                if (chatName.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Sohbet adı boş olamaz')),
+                  );
+                  return;
+                }
+
+                if (!isGroup) {
                   final email = emailController.text.trim();
                   if (email.isEmpty) {
                     ScaffoldMessenger.of(context).showSnackBar(
@@ -111,10 +108,22 @@ class ChatListScreen extends StatelessWidget {
                     return;
                   }
 
+                  print('Aranan e-posta: ${email.toLowerCase()}');
+                  
+                  // Tüm kullanıcıları listele
+                  final allUsers = await FirebaseFirestore.instance
+                      .collection('users')
+                      .get();
+                      
+                  print('Veritabanındaki tüm kullanıcılar:');
+                  for (var doc in allUsers.docs) {
+                    print('Email: ${doc.data()['email']}, ID: ${doc.id}');
+                  }
+
                   // Kullanıcıyı e-posta ile ara
                   final userQuery = await FirebaseFirestore.instance
                       .collection('users')
-                      .where('identifier', isEqualTo: email)
+                      .where('email', isEqualTo: email.toLowerCase())
                       .get();
 
                   if (userQuery.docs.isEmpty) {
@@ -179,9 +188,7 @@ class ChatListScreen extends StatelessWidget {
                   // Yeni sohbet oluştur
                   final docRef =
                       await FirebaseFirestore.instance.collection('chat').add({
-                    'chatName': isGroup
-                        ? chatNameController.text.trim()
-                        : emailController.text.trim(),
+                    'chatName': chatNameController.text.trim(),
                     'createdAt': FieldValue.serverTimestamp(),
                     'isGroup': isGroup,
                     'createdBy': currentUser.uid,

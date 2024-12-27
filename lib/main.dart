@@ -3,6 +3,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'screens/login_screen.dart';
+import 'screens/chat_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -120,7 +121,7 @@ class ChatListScreen extends StatelessWidget {
                     print('Email: ${doc.data()['email']}, ID: ${doc.id}');
                   }
 
-                  // Kullanıcıyı e-posta ile ara
+                  // Kullanıc��yı e-posta ile ara
                   final userQuery = await FirebaseFirestore.instance
                       .collection('users')
                       .where('email', isEqualTo: email.toLowerCase())
@@ -326,7 +327,15 @@ class ChatListScreen extends StatelessWidget {
                           ? const Icon(Icons.group)
                           : const Icon(Icons.person),
                       onTap: () {
-                        // TODO: Sohbet detay sayfasına yönlendirme
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => ChatScreen(
+                              chatId: chat.id,
+                              chatName: chatName,
+                            ),
+                          ),
+                        );
                       },
                     );
                   },

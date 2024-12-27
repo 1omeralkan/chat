@@ -1,158 +1,152 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart'; // Mesaj tarih ve saat formatı için
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:intl/intl.dart';
 
 class ChatScreen extends StatefulWidget {
+  final String chatId;
+  final String chatName;
+
+  const ChatScreen({
+    Key? key,
+    required this.chatId,
+    required this.chatName,
+  }) : super(key: key);
+
   @override
   _ChatScreenState createState() => _ChatScreenState();
 }
 
 class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _messageController = TextEditingController();
-  final List<Map<String, dynamic>> _messages = [];
+  final currentUser = FirebaseAuth.instance.currentUser;
 
-  void _sendMessage(String type) {
-    if (_messageController.text.trim().isNotEmpty || type != 'text') {
-      setState(() {
-        _messages.insert(0, {
-          'text': _messageController.text.trim(),
-          'isSentByMe': true,
-          'type': type,
-          'timestamp': DateTime.now(),
-        });
+  void _sendMessage() async {
+    if (_messageController.text.trim().isEmpty) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('chat')
+          .doc(widget.chatId)
+          .collection('messages')
+          .add({
+        'content': _messageController.text.trim(),
+        'senderID': currentUser?.uid,
+        'timestamp': FieldValue.serverTimestamp(),
+        'messageType': 'text',
       });
-      _messageController.clear();
-    }
-  }
 
-  void _addReaction(int index, String reaction) {
-    setState(() {
-      if (!_messages[index].containsKey('reaction')) {
-        _messages[index]['reaction'] = reaction;
-      } else {
-        _messages[index]['reaction'] = null; // Reaksiyonu kaldır
-      }
-    });
+      // Update last message in chat document
+      await FirebaseFirestore.instance.collection('chat').doc(widget.chatId).update({
+        'lastMessage': _messageController.text.trim(),
+        'lastMessageTime': FieldValue.serverTimestamp(),
+      });
+
+      _messageController.clear();
+    } catch (e) {
+      print('Mesaj gönderme hatası: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Mesaj gönderilemedi')),
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Sohbet'),
-        backgroundColor: Color(0xFF2C5364),
-        actions: [
-          IconButton(
-            icon: Icon(Icons.more_vert),
-            onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                    content: Text('Daha fazla seçenek')), // İsteğe bağlı menü
-              );
-            },
-          ),
-        ],
+        title: Text(widget.chatName),
+        backgroundColor: const Color(0xFF2C5364),
       ),
       body: Column(
         children: [
-          // Mesajlar Listesi
           Expanded(
-            child: ListView.builder(
-              reverse: true,
-              padding: EdgeInsets.all(8.0),
-              itemCount: _messages.length,
-              itemBuilder: (context, index) {
-                final message = _messages[index];
-                final isSentByMe = message['isSentByMe'] as bool;
-                final type = message['type'] as String;
-                final timestamp = message['timestamp'] as DateTime;
-                final reaction = message['reaction'];
+            child: StreamBuilder<QuerySnapshot>(
+              stream: FirebaseFirestore.instance
+                  .collection('chat')
+                  .doc(widget.chatId)
+                  .collection('messages')
+                  .orderBy('timestamp', descending: true)
+                  .snapshots(),
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return Center(child: Text('Bir hata oluştu: ${snapshot.error}'));
+                }
 
-                return Align(
-                  alignment:
-                      isSentByMe ? Alignment.centerRight : Alignment.centerLeft,
-                  child: GestureDetector(
-                    onLongPress: () {
-                      _addReaction(index, '👍');
-                    },
-                    child: Container(
-                      margin:
-                          EdgeInsets.symmetric(vertical: 6.0, horizontal: 10.0),
-                      padding: EdgeInsets.all(12.0),
-                      decoration: BoxDecoration(
-                        color:
-                            isSentByMe ? Color(0xFF203A43) : Color(0xFFEEEEEE),
-                        borderRadius: BorderRadius.only(
-                          topLeft: Radius.circular(12.0),
-                          topRight: Radius.circular(12.0),
-                          bottomLeft: isSentByMe
-                              ? Radius.circular(12.0)
-                              : Radius.circular(0),
-                          bottomRight: isSentByMe
-                              ? Radius.circular(0)
-                              : Radius.circular(12.0),
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                  return const Center(child: Text('Henüz mesaj yok'));
+                }
+
+                return ListView.builder(
+                  reverse: true,
+                  padding: const EdgeInsets.all(8.0),
+                  itemCount: snapshot.data!.docs.length,
+                  itemBuilder: (context, index) {
+                    final message = snapshot.data!.docs[index];
+                    final isMyMessage = message['senderID'] == currentUser?.uid;
+                    final timestamp = message['timestamp'] as Timestamp?;
+
+                    return Align(
+                      alignment: isMyMessage ? Alignment.centerRight : Alignment.centerLeft,
+                      child: Container(
+                        margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: isMyMessage ? const Color(0xFF203A43) : Colors.grey[300],
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              message['content'],
+                              style: TextStyle(
+                                color: isMyMessage ? Colors.white : Colors.black,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              timestamp != null
+                                  ? DateFormat('HH:mm').format(timestamp.toDate())
+                                  : '',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: isMyMessage ? Colors.white70 : Colors.black54,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (type == 'text')
-                            Text(
-                              message['text'],
-                              style: TextStyle(
-                                color:
-                                    isSentByMe ? Colors.white : Colors.black87,
-                                fontSize: 16.0,
-                              ),
-                            ),
-                          SizedBox(height: 6.0),
-                          Text(
-                            DateFormat('hh:mm a').format(timestamp),
-                            style: TextStyle(
-                              color:
-                                  isSentByMe ? Colors.white70 : Colors.black54,
-                              fontSize: 12.0,
-                            ),
-                          ),
-                          if (reaction != null)
-                            Text(
-                              'Reaksiyon: $reaction',
-                              style: TextStyle(
-                                fontSize: 14.0,
-                                color:
-                                    isSentByMe ? Colors.yellow : Colors.orange,
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
+                    );
+                  },
                 );
               },
             ),
           ),
-          Divider(height: 1.0),
           Container(
+            padding: const EdgeInsets.all(8.0),
             color: Colors.white,
-            padding: EdgeInsets.symmetric(horizontal: 8.0, vertical: 6.0),
             child: Row(
               children: [
-                IconButton(
-                  icon: Icon(Icons.add, color: Color(0xFF2C5364)),
-                  onPressed: () {},
-                ),
                 Expanded(
                   child: TextField(
                     controller: _messageController,
-                    decoration: InputDecoration(
+                    decoration: const InputDecoration(
                       hintText: 'Mesajınızı yazın...',
-                      border: InputBorder.none,
-                      contentPadding: EdgeInsets.all(10.0),
+                      border: OutlineInputBorder(),
                     ),
+                    maxLines: null,
                   ),
                 ),
+                const SizedBox(width: 8),
                 IconButton(
-                  icon: Icon(Icons.send, color: Color(0xFF2C5364)),
-                  onPressed: () => _sendMessage('text'),
+                  icon: const Icon(Icons.send),
+                  onPressed: _sendMessage,
+                  color: const Color(0xFF2C5364),
                 ),
               ],
             ),

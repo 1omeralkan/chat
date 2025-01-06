@@ -139,15 +139,24 @@ class _CreateChatScreenState extends State<CreateChatScreen> {
         'isGroup': isGroup,
         'createdAt': FieldValue.serverTimestamp(),
         'createdBy': currentUser.uid,
+        'photoUrl': null,  // Başlangıçta boş
       });
 
-      // Üyeleri ekle
-      memberIds.add(currentUser.uid); // Kendini de ekle
+      // Oluşturan kişiyi admin olarak ekle
+      await chatRef.collection('groupMember').add({
+        'userID': currentUser.uid,
+        'addedAt': FieldValue.serverTimestamp(),
+        'addedBy': currentUser.uid,
+        'isAdmin': true,  // Oluşturan kişi admin olur
+      });
+
+      // Diğer üyeleri ekle
       for (String userId in memberIds) {
         await chatRef.collection('groupMember').add({
           'userID': userId,
           'addedAt': FieldValue.serverTimestamp(),
           'addedBy': currentUser.uid,
+          'isAdmin': false,  // Diğer üyeler normal üye olur
         });
       }
 

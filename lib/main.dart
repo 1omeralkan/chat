@@ -103,25 +103,25 @@ class ChatListScreen extends StatelessWidget {
                 },
               ),
               const SizedBox(height: 16),
-              TextField(
-                controller: chatNameController,
-                decoration: const InputDecoration(
+                TextField(
+                  controller: chatNameController,
+                  decoration: const InputDecoration(
                   labelText: 'Sohbet Adı',
-                  border: OutlineInputBorder(),
+                    border: OutlineInputBorder(),
                   hintText: 'Sohbet için bir isim girin',
+                  ),
+                  autofocus: true,
                 ),
-                autofocus: true,
-              ),
               const SizedBox(height: 16),
-              TextField(
-                controller: emailController,
-                decoration: const InputDecoration(
-                  labelText: 'Karşı Kullanıcının E-postası',
-                  border: OutlineInputBorder(),
-                  hintText: 'ornek@email.com',
+                TextField(
+                  controller: emailController,
+                  decoration: const InputDecoration(
+                    labelText: 'Karşı Kullanıcının E-postası',
+                    border: OutlineInputBorder(),
+                    hintText: 'ornek@email.com',
+                  ),
+                  keyboardType: TextInputType.emailAddress,
                 ),
-                keyboardType: TextInputType.emailAddress,
-              ),
             ],
           ),
           actions: [
@@ -131,13 +131,13 @@ class ChatListScreen extends StatelessWidget {
             ),
             ElevatedButton(
               onPressed: () async {
-                final chatName = chatNameController.text.trim();
-                if (chatName.isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(
+                  final chatName = chatNameController.text.trim();
+                  if (chatName.isEmpty) {
+                    ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(content: Text('Sohbet adı boş olamaz')),
-                  );
-                  return;
-                }
+                    );
+                    return;
+                  }
 
                 if (!isGroup) {
                   final email = emailController.text.trim();
@@ -344,40 +344,67 @@ class ChatListScreen extends StatelessWidget {
                     }
 
                     final chats = filteredChatsSnapshot.data!;
-                    
-                    return ListView.builder(
+
+                return ListView.builder(
                       itemCount: chats.length,
-                      itemBuilder: (context, index) {
+                  itemBuilder: (context, index) {
                         final chat = chats[index];
                         final data = chat.data() as Map<String, dynamic>;
-                        String createdAtText;
+                    String createdAtText;
 
-                        try {
+                    try {
                           final createdAt = data['createdAt'];
-                          if (createdAt is Timestamp) {
-                            createdAtText = createdAt.toDate().toString();
-                          } else if (createdAt == null) {
-                            createdAtText = 'Belirsiz';
-                          } else {
-                            createdAtText = createdAt.toString();
-                          }
-                        } catch (e) {
-                          createdAtText = 'Belirsiz';
-                        }
+                      if (createdAt is Timestamp) {
+                        createdAtText = createdAt.toDate().toString();
+                      } else if (createdAt == null) {
+                        createdAtText = 'Belirsiz';
+                      } else {
+                        createdAtText = createdAt.toString();
+                      }
+                    } catch (e) {
+                      createdAtText = 'Belirsiz';
+                    }
 
                         final chatName = data['name'] as String? ?? 'İsimsiz Sohbet';
+                        final isGroup = data['isGroup'] as bool? ?? false;
+                        final photoUrl = data['photoUrl'] as String?;
                         final firstLetter = chatName.isNotEmpty ? chatName[0].toUpperCase() : '?';
 
-                        return ListTile(
-                          title: Text(chatName),
-                          subtitle: Text('Oluşturulma: $createdAtText'),
-                          leading: CircleAvatar(
-                            child: Text(firstLetter),
-                          ),
-                          trailing: data['isGroup'] == true
-                              ? const Icon(Icons.group)
-                              : const Icon(Icons.person),
-                          onTap: () {
+                    return ListTile(
+                      title: Text(chatName),
+                      subtitle: Text('Oluşturulma: $createdAtText'),
+                      leading: Container(
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: photoUrl == null ? Colors.grey : null,
+                          image: photoUrl != null
+                              ? DecorationImage(
+                                  image: NetworkImage(photoUrl),
+                                  fit: BoxFit.cover,
+                                )
+                              : null,
+                        ),
+                        child: photoUrl == null
+                            ? Center(
+                                child: isGroup
+                                    ? const Icon(Icons.group, color: Colors.white)
+                                    : Text(
+                                        firstLetter,
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                              )
+                            : null,
+                      ),
+                      trailing: isGroup
+                          ? const Icon(Icons.group)
+                          : const Icon(Icons.person),
+                      onTap: () {
                             Navigator.push(
                               context,
                               MaterialPageRoute(

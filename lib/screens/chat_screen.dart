@@ -8,9 +8,13 @@ import 'package:firebase_storage/firebase_storage.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:video_player/video_player.dart';
+import 'package:record/record.dart';
+import 'package:audioplayers/audioplayers.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class ChatScreen extends StatefulWidget {
   final String chatId;
@@ -30,348 +34,208 @@ class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _messageController = TextEditingController();
   final currentUser = FirebaseAuth.instance.currentUser;
   final ImagePicker _picker = ImagePicker();
+  late final AudioRecorder _audioRecorder;
+  final _audioPlayer = AudioPlayer();
   bool _isUploading = false;
+  bool _isRecording = false;
+  String? _recordingPath;
+  Timer? _recordingTimer;
+  int _recordingDuration = 0;
+  bool _isPlaying = false;
+  String? _currentlyPlayingUrl;
 
   // Reaksiyon emojileri
   final List<String> reactions = ['👍', '❤️', '😂', '😮', '😢', '😡'];
 
-  // Reaksiyon ekleme fonksiyonu
-  Future<void> _addReaction(String messageId, String reaction) async {
+  @override
+  void initState() {
+    super.initState();
+    _audioRecorder = AudioRecorder();
+  }
+
+  @override
+  void dispose() {
+    _messageController.dispose();
+    _audioRecorder.dispose();
+    _audioPlayer.dispose();
+    _recordingTimer?.cancel();
+    super.dispose();
+  }
+
+  // Ses kaydı başlatma fonksiyonu
+  Future<void> _startRecording() async {
     try {
-      final messageRef = FirebaseFirestore.instance
-          .collection('chat')
-          .doc(widget.chatId)
-          .collection('messages')
-          .doc(messageId);
+      if (await Permission.microphone.request().isGranted) {
+        final tempDir = await getTemporaryDirectory();
+        _recordingPath = '${tempDir.path}/audio_${DateTime.now().millisecondsSinceEpoch}.m4a';
 
-      // Mevcut reaksiyonları al
-      final messageDoc = await messageRef.get();
-      Map<String, dynamic> reactions = {};
-      
-      // Mevcut reaksiyonları güvenli bir şekilde dönüştür
-      if (messageDoc.data()?['reactions'] != null) {
-        reactions = Map<String, dynamic>.from(messageDoc.data()!['reactions'] as Map);
+        await _audioRecorder.start(
+          const RecordConfig(
+            encoder: AudioEncoder.aacLc,
+            bitRate: 128000,
+            sampleRate: 44100,
+          ),
+          path: _recordingPath!,
+        );
+
+        setState(() {
+          _isRecording = true;
+          _recordingDuration = 0;
+        });
+
+        _recordingTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+          setState(() {
+            _recordingDuration++;
+          });
+        });
       }
-
-      // Kullanıcının önceki reaksiyonunu kontrol et
-      String? userPreviousReaction;
-      reactions.forEach((emoji, users) {
-        if ((users as List).contains(currentUser?.uid)) {
-          userPreviousReaction = emoji;
-        }
-      });
-
-      // Eğer aynı reaksiyonu tekrar seçtiyse, reaksiyonu kaldır
-      if (userPreviousReaction == reaction) {
-        final List<String> updatedUsers = List<String>.from(reactions[reaction] as List)
-            .where((uid) => uid != currentUser?.uid)
-            .toList();
-            
-        if (updatedUsers.isEmpty) {
-          reactions.remove(reaction);
-        } else {
-          reactions[reaction] = updatedUsers;
-        }
-      } else {
-        // Önceki reaksiyonu kaldır
-        if (userPreviousReaction != null) {
-          final List<String> previousUsers = List<String>.from(reactions[userPreviousReaction!] as List)
-              .where((uid) => uid != currentUser?.uid)
-              .toList();
-              
-          if (previousUsers.isEmpty) {
-            reactions.remove(userPreviousReaction);
-          } else {
-            reactions[userPreviousReaction!] = previousUsers;
-          }
-        }
-        
-        // Yeni reaksiyonu ekle
-        if (!reactions.containsKey(reaction)) {
-          reactions[reaction] = <String>[];
-        }
-        final List<String> users = List<String>.from(reactions[reaction] as List? ?? []);
-        users.add(currentUser!.uid);
-        reactions[reaction] = users;
-      }
-
-      // Reaksiyonları güncelle
-      await messageRef.update({'reactions': reactions});
-      
-      print('Reaksiyonlar güncellendi: $reactions'); // Debug için
     } catch (e) {
-      print('Reaksiyon ekleme hatası: $e');
-      print(e.toString()); // Detaylı hata mesajı
-    }
-  }
-
-  // Reaksiyon seçme diyaloğu
-  void _showReactionPicker(String messageId) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        contentPadding: const EdgeInsets.all(16),
-        content: Wrap(
-          spacing: 8,
-          children: reactions.map((emoji) => GestureDetector(
-            onTap: () {
-              Navigator.pop(context);
-              _addReaction(messageId, emoji);
-            },
-            child: Container(
-              padding: const EdgeInsets.all(8),
-              child: Text(
-                emoji,
-                style: const TextStyle(fontSize: 24),
-              ),
-            ),
-          )).toList(),
-        ),
-      ),
-    );
-  }
-
-  // Reaksiyonları gösteren widget
-  Widget _buildReactions(Map<String, dynamic>? reactions) {
-    if (reactions == null || reactions.isEmpty) return const SizedBox.shrink();
-
-    return Container(
-      margin: const EdgeInsets.only(top: 4),
-      child: Wrap(
-        spacing: 4,
-        runSpacing: 4,
-        children: reactions.entries.map((entry) {
-          final emoji = entry.key;
-          final users = entry.value as List;
-          final count = users.length;
-          final hasReacted = users.contains(currentUser?.uid);
-
-          return Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-            decoration: BoxDecoration(
-              color: hasReacted 
-                ? const Color(0xFF2C5364).withOpacity(0.2) 
-                : Colors.grey.withOpacity(0.1),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: hasReacted 
-                  ? const Color(0xFF2C5364).withOpacity(0.3) 
-                  : Colors.grey.withOpacity(0.2),
-                width: 1,
-              ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  emoji,
-                  style: const TextStyle(fontSize: 14),
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  count.toString(),
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    color: hasReacted 
-                      ? const Color(0xFF2C5364) 
-                      : Colors.grey[600],
-                  ),
-                ),
-              ],
-            ),
-          );
-        }).toList(),
-      ),
-    );
-  }
-
-  void _sendMessage() async {
-    if (_messageController.text.trim().isEmpty) return;
-
-    try {
-      await FirebaseFirestore.instance
-          .collection('chat')
-          .doc(widget.chatId)
-          .collection('messages')
-          .add({
-        'content': _messageController.text.trim(),
-        'senderID': currentUser?.uid,
-        'timestamp': FieldValue.serverTimestamp(),
-        'messageType': 'text',
-      });
-
-      // Update last message in chat document
-      await FirebaseFirestore.instance.collection('chat').doc(widget.chatId).update({
-        'lastMessage': _messageController.text.trim(),
-        'lastMessageTime': FieldValue.serverTimestamp(),
-      });
-
-      _messageController.clear();
-    } catch (e) {
-      print('Mesaj gönderme hatası: $e');
+      print('Ses kaydı başlatma hatası: $e');
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Mesaj gönderilemedi')),
+        SnackBar(content: Text('Ses kaydı başlatılamadı: $e')),
       );
     }
   }
 
-  // Medya seçme ve gönderme fonksiyonu
-  Future<void> _pickAndSendMedia(ImageSource source, bool isVideo) async {
+  // Ses kaydını durdurma ve gönderme fonksiyonu
+  Future<void> _stopRecordingAndSend() async {
     try {
-      setState(() => _isUploading = true);
-
-      final XFile? file = isVideo
-          ? await _picker.pickVideo(source: source)
-          : await _picker.pickImage(source: source);
-
-      if (file == null) {
-        setState(() => _isUploading = false);
-        return;
-      }
-
-      String? mediaUrl;
-      String messageType;
+      _recordingTimer?.cancel();
+      final path = await _audioRecorder.stop();
       
-      if (isVideo) {
-        // Video sıkıştırma
-        final MediaInfo? compressedVideo = await VideoCompress.compressVideo(
-          file.path,
-          quality: VideoQuality.MediumQuality,
-          deleteOrigin: false,
-        );
-        
-        if (compressedVideo?.file == null) throw 'Video sıkıştırılamadı';
-        
-        // Sıkıştırılmış videoyu yükle
-        mediaUrl = await _uploadFile(File(compressedVideo!.file!.path), 'videos');
-        messageType = 'video';
-      } else {
-        // Resmi sıkıştır ve JPEG'e dönüştür
-        final File compressedImage = await _compressImage(File(file.path));
-        
-        // Sıkıştırılmış resmi yükle
-        mediaUrl = await _uploadFile(compressedImage, 'images');
-        messageType = 'image';
-      }
+      setState(() {
+        _isRecording = false;
+        _recordingDuration = 0;
+      });
 
-      if (mediaUrl != null) {
-        // Mesajı veritabanına kaydet
+      if (path != null) {
+        final file = File(path);
+        final fileName = 'audio_${DateTime.now().millisecondsSinceEpoch}.m4a';
+        
+        final storageRef = FirebaseStorage.instance
+            .ref()
+            .child('audio')
+            .child(fileName);
+
+        final uploadTask = storageRef.putFile(
+          file,
+          SettableMetadata(
+            contentType: 'audio/m4a',
+            customMetadata: {
+              'duration': _recordingDuration.toString(),
+            },
+          ),
+        );
+
+        final snapshot = await uploadTask;
+        final downloadUrl = await snapshot.ref.getDownloadURL();
+
         await FirebaseFirestore.instance
             .collection('chat')
             .doc(widget.chatId)
             .collection('messages')
             .add({
-          'content': mediaUrl,
-          'senderID': FirebaseAuth.instance.currentUser?.uid,
+          'content': downloadUrl,
+          'senderID': currentUser?.uid,
           'timestamp': FieldValue.serverTimestamp(),
-          'messageType': messageType,
+          'messageType': 'audio',
+          'duration': _recordingDuration,
         });
-
-        print('Medya mesajı başarıyla kaydedildi');
-      } else {
-        throw 'Medya yüklenemedi';
       }
     } catch (e) {
-      print('Medya gönderme hatası: $e');
+      print('Ses kaydı durdurma hatası: $e');
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Medya gönderilemedi: $e')),
+        SnackBar(content: Text('Ses kaydı gönderilemedi: $e')),
       );
-    } finally {
-      if (mounted) {
-        setState(() => _isUploading = false);
-      }
     }
   }
 
-  // Resim sıkıştırma fonksiyonu
-  Future<File> _compressImage(File file) async {
-    final dir = await getTemporaryDirectory();
-    final targetPath = path.join(dir.path, '${DateTime.now().millisecondsSinceEpoch}.jpg');
-    
-    final result = await FlutterImageCompress.compressAndGetFile(
-      file.path,
-      targetPath,
-      quality: 70,
-      format: CompressFormat.jpeg,
-    );
-    
-    return File(result?.path ?? file.path);
-  }
-
-  // Dosya yükleme fonksiyonu
-  Future<String?> _uploadFile(File file, String folder) async {
+  // Ses oynatma fonksiyonu
+  Future<void> _playAudio(String url) async {
     try {
-      // Storage referansını oluştur
-      final storageRef = FirebaseStorage.instance.ref();
-      
-      // Dosya adını oluştur
-      final fileName = '${DateTime.now().millisecondsSinceEpoch}${path.extension(file.path)}';
-      
-      // Doğrudan dosya referansını oluştur
-      final fileRef = storageRef.child('$folder/$fileName');
-      
-      print('Dosya yükleniyor: $folder/$fileName');
-      
-      // Metadata oluştur
-      final metadata = SettableMetadata(
-        contentType: folder == 'images' ? 'image/jpeg' : 'video/mp4',
-        customMetadata: {
-          'uploaded': DateTime.now().toIso8601String(),
-          'originalName': path.basename(file.path),
-        },
-      );
+      if (_isPlaying && _currentlyPlayingUrl == url) {
+        // Aynı ses dosyası çalıyorsa durdur
+        await _audioPlayer.stop();
+        setState(() {
+          _isPlaying = false;
+          _currentlyPlayingUrl = null;
+        });
+        return;
+      }
 
-      // Dosyayı yükle
-      final uploadTask = await fileRef.putFile(file, metadata);
-      
-      if (uploadTask.state == TaskState.success) {
-        // Dosyanın URL'sini al
-        final downloadUrl = await fileRef.getDownloadURL();
-        print('Dosya başarıyla yüklendi. URL: $downloadUrl');
-        return downloadUrl;
-      } else {
-        throw 'Dosya yükleme başarısız: ${uploadTask.state}';
+      // Başka bir ses dosyası çalıyorsa önce onu durdur
+      if (_isPlaying) {
+        await _audioPlayer.stop();
       }
-    } on FirebaseException catch (e) {
-      print('Firebase Storage hatası: ${e.code} - ${e.message}');
-      print('Stack trace: ${StackTrace.current}');
-      
-      // Kullanıcıya daha anlaşılır bir hata mesajı göster
-      String errorMessage = 'Dosya yüklenemedi';
-      switch (e.code) {
-        case 'object-not-found':
-          errorMessage = 'Depolama konumu bulunamadı';
-          break;
-        case 'unauthorized':
-          errorMessage = 'Yükleme için yetkiniz yok';
-          break;
-        case 'canceled':
-          errorMessage = 'Yükleme iptal edildi';
-          break;
-        default:
-          errorMessage = 'Bir hata oluştu: ${e.message}';
-      }
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(errorMessage)),
-      );
-      
-      rethrow;
+
+      // Yeni ses dosyasını çal
+      await _audioPlayer.setSourceUrl(url);  // Önce kaynağı ayarla
+      await _audioPlayer.resume();  // Sonra oynatmaya başla
+
+      setState(() {
+        _isPlaying = true;
+        _currentlyPlayingUrl = url;
+      });
+
+      // Ses bittiğinde durumu güncelle
+      _audioPlayer.onPlayerComplete.listen((_) {
+        if (mounted) {
+          setState(() {
+            _isPlaying = false;
+            _currentlyPlayingUrl = null;
+          });
+        }
+      });
+
     } catch (e) {
-      print('Yükleme hatası: $e');
-      print('Stack trace: ${StackTrace.current}');
-      
+      print('Ses oynatma hatası: $e');
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Dosya yüklenirken bir hata oluştu: $e')),
+        SnackBar(content: Text('Ses oynatılamadı: $e')),
       );
-      
-      rethrow;
     }
   }
 
-  // Medya seçme dialog'u
-  void _showMediaPicker() {
+  // Ses mesajı widget'ı
+  Widget _buildAudioMessage(Map<String, dynamic> messageData) {
+    final duration = messageData['duration'] as int? ?? 0;
+    final minutes = (duration / 60).floor();
+    final seconds = duration % 60;
+    final durationText = '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+    final url = messageData['content'] as String;
+
+    return Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: Colors.grey[200],
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            icon: Icon(
+              (_isPlaying && _currentlyPlayingUrl == url) 
+                  ? Icons.pause 
+                  : Icons.play_arrow
+            ),
+            onPressed: () => _playAudio(url),
+          ),
+          Text(durationText),
+          if (_isPlaying && _currentlyPlayingUrl == url)
+            const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // Medya seçici fonksiyonu
+  Future<void> _showMediaPicker() async {
     showModalBottomSheet(
       context: context,
       builder: (context) => SafeArea(
@@ -379,215 +243,149 @@ class _ChatScreenState extends State<ChatScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.photo_camera),
-              title: const Text('Kamera ile Fotoğraf Çek'),
-              onTap: () {
+              leading: const Icon(Icons.photo),
+              title: const Text('Fotoğraf'),
+              onTap: () async {
                 Navigator.pop(context);
-                _pickAndSendMedia(ImageSource.camera, false);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_library),
-              title: const Text('Galeriden Fotoğraf Seç'),
-              onTap: () {
-                Navigator.pop(context);
-                _pickAndSendMedia(ImageSource.gallery, false);
+                final image = await _picker.pickImage(source: ImageSource.gallery);
+                if (image != null) {
+                  await _uploadMedia(File(image.path), 'images');
+                }
               },
             ),
             ListTile(
               leading: const Icon(Icons.videocam),
-              title: const Text('Kamera ile Video Çek'),
-              onTap: () {
+              title: const Text('Video'),
+              onTap: () async {
                 Navigator.pop(context);
-                _pickAndSendMedia(ImageSource.camera, true);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.video_library),
-              title: const Text('Galeriden Video Seç'),
-              onTap: () {
-                Navigator.pop(context);
-                _pickAndSendMedia(ImageSource.gallery, true);
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // Tam ekran resim görüntüleme
-  void _showFullScreenImage(BuildContext context, String imageUrl) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => Scaffold(
-          appBar: AppBar(
-            backgroundColor: Colors.black,
-            iconTheme: const IconThemeData(color: Colors.white),
-          ),
-          body: Center(
-            child: InteractiveViewer(
-              child: Image.network(
-                imageUrl,
-                fit: BoxFit.contain,
-                loadingBuilder: (context, child, loadingProgress) {
-                  if (loadingProgress == null) return child;
-                  return const Center(child: CircularProgressIndicator());
-                },
-              ),
-            ),
-          ),
-          backgroundColor: Colors.black,
-        ),
-      ),
-    );
-  }
-
-  // Video önizleme widget'ı
-  Widget _buildVideoThumbnail(String videoUrl) {
-    return GestureDetector(
-      onTap: () => _playVideo(context, videoUrl),
-      child: Container(
-        width: 200,
-        height: 150,
-        decoration: BoxDecoration(
-          color: Colors.grey[300],
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            const Icon(
-              Icons.play_circle_fill,
-              size: 48,
-              color: Colors.white,
-            ),
-            Positioned(
-              bottom: 8,
-              right: 8,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.7),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.videocam,
-                      color: Colors.white,
-                      size: 16,
-                    ),
-                    SizedBox(width: 4),
-                    Text(
-                      'Video',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // Video oynatma ekranı
-  void _playVideo(BuildContext context, String videoUrl) {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => _VideoPlayerScreen(videoUrl: videoUrl),
-      ),
-    );
-  }
-
-  // Yeni üye ekleme fonksiyonu
-  Future<void> _addNewMembers() async {
-    final TextEditingController emailController = TextEditingController();
-
-    showDialog(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Üye Ekle'),
-          content: TextField(
-            controller: emailController,
-            decoration: const InputDecoration(
-              labelText: 'Kullanıcı E-posta',
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('İptal'),
-            ),
-            TextButton(
-              onPressed: () async {
-                final email = emailController.text.trim();
-                if (email.isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('E-posta adresi gerekli')),
-                  );
-                  return;
-                }
-
-                try {
-                  // Kullanıcıyı bul
-                  final userQuery = await FirebaseFirestore.instance
-                      .collection('users')
-                      .where('email', isEqualTo: email)
-                      .get();
-
-                  if (userQuery.docs.isEmpty) {
-                    throw 'Kullanıcı bulunamadı';
-                  }
-
-                  // Kullanıcının zaten üye olup olmadığını kontrol et
-                  final memberQuery = await FirebaseFirestore.instance
-                      .collection('chat')
-                      .doc(widget.chatId)
-                      .collection('groupMember')
-                      .where('userID', isEqualTo: userQuery.docs.first.id)
-                      .get();
-
-                  if (memberQuery.docs.isNotEmpty) {
-                    throw 'Kullanıcı zaten üye';
-                  }
-
-                  // Yeni üyeyi ekle
-                  await FirebaseFirestore.instance
-                      .collection('chat')
-                      .doc(widget.chatId)
-                      .collection('groupMember')
-                      .add({
-                    'userID': userQuery.docs.first.id,
-                    'addedAt': FieldValue.serverTimestamp(),
-                    'addedBy': currentUser?.uid,
-                  });
-
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Üye başarıyla eklendi')),
-                  );
-                } catch (e) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text(e.toString())),
-                  );
+                final video = await _picker.pickVideo(source: ImageSource.gallery);
+                if (video != null) {
+                  await _uploadMedia(File(video.path), 'videos');
                 }
               },
-              child: const Text('Ekle'),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  // Medya yükleme fonksiyonu
+  Future<void> _uploadMedia(File file, String folder) async {
+    try {
+      setState(() => _isUploading = true);
+
+      final fileName = '${DateTime.now().millisecondsSinceEpoch}${path.extension(file.path)}';
+      final storageRef = FirebaseStorage.instance.ref().child(folder).child(fileName);
+
+      String? downloadUrl;
+      String? thumbnailUrl;
+      String messageType = folder == 'images' ? 'image' : 'video';
+
+      if (messageType == 'video') {
+        // Video sıkıştırma
+        final MediaInfo? mediaInfo = await VideoCompress.compressVideo(
+          file.path,
+          quality: VideoQuality.MediumQuality,
         );
-      },
-    );
+
+        if (mediaInfo?.file != null) {
+          final uploadTask = await storageRef.putFile(
+            File(mediaInfo!.file!.path),
+            SettableMetadata(contentType: 'video/mp4'),
+          );
+          downloadUrl = await uploadTask.ref.getDownloadURL();
+
+          // Thumbnail oluştur ve yükle
+          final thumbnailFile = await VideoCompress.getFileThumbnail(file.path);
+          final thumbnailRef = storageRef.parent!.child('thumbnails/$fileName.jpg');
+          final thumbnailUpload = await thumbnailRef.putFile(thumbnailFile);
+          thumbnailUrl = await thumbnailUpload.ref.getDownloadURL();
+        }
+      } else {
+        // Resim sıkıştırma ve XFile'ı File'a dönüştürme
+        if (file is XFile) {
+          final compressedFile = await FlutterImageCompress.compressAndGetFile(
+            file.path,
+            '${file.path}_compressed.jpg',
+            quality: 70,
+          );
+
+          if (compressedFile != null) {
+            final uploadTask = await storageRef.putFile(
+              File(compressedFile.path),
+              SettableMetadata(contentType: 'image/jpeg'),
+            );
+            downloadUrl = await uploadTask.ref.getDownloadURL();
+          }
+        } else {
+          final compressedFile = await FlutterImageCompress.compressAndGetFile(
+            file.path,
+            '${file.path}_compressed.jpg',
+            quality: 70,
+          );
+
+          if (compressedFile != null) {
+            final uploadTask = await storageRef.putFile(
+              File(compressedFile.path),
+              SettableMetadata(contentType: 'image/jpeg'),
+            );
+            downloadUrl = await uploadTask.ref.getDownloadURL();
+          }
+        }
+      }
+
+      if (downloadUrl != null) {
+        await FirebaseFirestore.instance
+            .collection('chat')
+            .doc(widget.chatId)
+            .collection('messages')
+            .add({
+          'content': downloadUrl,
+          'thumbnail': thumbnailUrl,
+          'senderID': currentUser?.uid,
+          'timestamp': FieldValue.serverTimestamp(),
+          'messageType': messageType,
+        });
+      }
+    } catch (e) {
+      print('Medya yükleme hatası: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Medya yüklenemedi: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isUploading = false);
+      }
+    }
+  }
+
+  // Mesaj gönderme fonksiyonu
+  Future<void> _sendMessage() async {
+    final message = _messageController.text.trim();
+    if (message.isEmpty) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('chat')
+          .doc(widget.chatId)
+          .collection('messages')
+          .add({
+        'content': message,
+        'senderID': currentUser?.uid,
+        'timestamp': FieldValue.serverTimestamp(),
+        'messageType': 'text',
+      });
+
+      _messageController.clear();
+    } catch (e) {
+      print('Mesaj gönderme hatası: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Mesaj gönderilemedi: $e')),
+      );
+    }
   }
 
   @override
@@ -595,26 +393,6 @@ class _ChatScreenState extends State<ChatScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.chatName),
-        actions: [
-          // Grup sohbeti kontrolü ve üye ekleme butonu
-          StreamBuilder<DocumentSnapshot>(
-            stream: FirebaseFirestore.instance
-                .collection('chat')
-                .doc(widget.chatId)
-                .snapshots(),
-            builder: (context, snapshot) {
-              if (snapshot.hasData && 
-                  snapshot.data!.exists && 
-                  (snapshot.data!.data() as Map<String, dynamic>)['isGroup'] == true) {
-                return IconButton(
-                  icon: const Icon(Icons.person_add),
-                  onPressed: _addNewMembers,
-                );
-              }
-              return const SizedBox.shrink();
-            },
-          ),
-        ],
       ),
       body: Column(
         children: [
@@ -631,17 +409,12 @@ class _ChatScreenState extends State<ChatScreen> {
                   return Center(child: Text('Bir hata oluştu: ${snapshot.error}'));
                 }
 
-                if (snapshot.connectionState == ConnectionState.waiting) {
+                if (!snapshot.hasData) {
                   return const Center(child: CircularProgressIndicator());
-                }
-
-                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                  return const Center(child: Text('Henüz mesaj yok'));
                 }
 
                 return ListView.builder(
                   reverse: true,
-                  padding: const EdgeInsets.all(8.0),
                   itemCount: snapshot.data!.docs.length,
                   itemBuilder: (context, index) {
                     final message = snapshot.data!.docs[index];
@@ -651,78 +424,83 @@ class _ChatScreenState extends State<ChatScreen> {
 
                     Widget messageContent;
                     switch (messageType) {
-                      case 'image':
-                        messageContent = GestureDetector(
-                          onTap: () => _showFullScreenImage(context, messageData['content']),
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: Image.network(
-                              messageData['content'],
-                              width: 200,
-                              fit: BoxFit.cover,
-                              loadingBuilder: (context, child, loadingProgress) {
-                                if (loadingProgress == null) return child;
-                                return const Center(child: CircularProgressIndicator());
-                              },
-                            ),
-                          ),
-                        );
-                        break;
-                      case 'video':
-                        messageContent = _buildVideoThumbnail(messageData['content']);
-                        break;
-                      default:
+                      case 'text':
                         messageContent = Text(
                           messageData['content'],
                           style: TextStyle(
                             color: isMyMessage ? Colors.white : Colors.black,
                           ),
                         );
-                    }
-
-                    return GestureDetector(
-                      onLongPress: () => _showReactionPicker(message.id),
-                      child: Align(
-                        alignment: isMyMessage ? Alignment.centerRight : Alignment.centerLeft,
-                        child: Container(
-                          margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: isMyMessage ? const Color(0xFF203A43) : Colors.grey[300],
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
+                        break;
+                      case 'image':
+                        messageContent = Image.network(
+                          messageData['content'],
+                          width: 200,
+                          fit: BoxFit.cover,
+                        );
+                        break;
+                      case 'video':
+                        messageContent = GestureDetector(
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => _VideoPlayerScreen(
+                                  videoUrl: messageData['content'],
+                                ),
+                              ),
+                            );
+                          },
+                          child: Stack(
+                            alignment: Alignment.center,
                             children: [
-                              messageContent,
-                              const SizedBox(height: 4),
-                              Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    messageData['timestamp'] != null
-                                        ? DateFormat('HH:mm').format(
-                                            (messageData['timestamp'] as Timestamp).toDate())
-                                        : '',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: isMyMessage ? Colors.white70 : Colors.black54,
-                                    ),
-                                  ),
-                                  if (messageData['reactions'] != null) ...[
-                                    Container(
-                                      height: 16,
-                                      margin: const EdgeInsets.symmetric(horizontal: 8),
-                                      width: 1,
-                                      color: isMyMessage ? Colors.white30 : Colors.black12,
-                                    ),
-                                    _buildReactions(messageData['reactions']),
-                                  ],
-                                ],
+                              Image.network(
+                                messageData['thumbnail'] ?? '',
+                                width: 200,
+                                fit: BoxFit.cover,
+                              ),
+                              const Icon(
+                                Icons.play_circle_fill,
+                                size: 50,
+                                color: Colors.white,
                               ),
                             ],
                           ),
+                        );
+                        break;
+                      case 'audio':
+                        messageContent = _buildAudioMessage(messageData);
+                        break;
+                      default:
+                        messageContent = Text(messageData['content'] ?? 'Boş mesaj');
+                    }
+
+                    return Align(
+                      alignment: isMyMessage ? Alignment.centerRight : Alignment.centerLeft,
+                      child: Container(
+                        margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: isMyMessage ? const Color(0xFF203A43) : Colors.grey[300],
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            messageContent,
+                            const SizedBox(height: 4),
+                            Text(
+                              messageData['timestamp'] != null
+                                  ? DateFormat('HH:mm').format(
+                                      (messageData['timestamp'] as Timestamp).toDate())
+                                  : '',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: isMyMessage ? Colors.white70 : Colors.black54,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     );
@@ -736,6 +514,15 @@ class _ChatScreenState extends State<ChatScreen> {
             color: Colors.white,
             child: Row(
               children: [
+                GestureDetector(
+                  onLongPress: _startRecording,
+                  onLongPressEnd: (_) => _stopRecordingAndSend(),
+                  child: IconButton(
+                    icon: Icon(_isRecording ? Icons.mic : Icons.mic_none),
+                    color: _isRecording ? Colors.red : const Color(0xFF2C5364),
+                    onPressed: null,
+                  ),
+                ),
                 IconButton(
                   icon: const Icon(Icons.attach_file),
                   onPressed: _isUploading ? null : _showMediaPicker,
@@ -745,17 +532,20 @@ class _ChatScreenState extends State<ChatScreen> {
                   child: TextField(
                     controller: _messageController,
                     decoration: InputDecoration(
-                      hintText: _isUploading ? 'Yükleniyor...' : 'Mesajınızı yazın...',
+                      hintText: _isRecording 
+                          ? 'Kayıt yapılıyor... ${_recordingDuration}s'
+                          : _isUploading 
+                              ? 'Yükleniyor...' 
+                              : 'Mesajınızı yazın...',
                       border: const OutlineInputBorder(),
                     ),
-                    enabled: !_isUploading,
-                    maxLines: null,
+                    enabled: !_isUploading && !_isRecording,
                   ),
                 ),
                 const SizedBox(width: 8),
                 IconButton(
                   icon: const Icon(Icons.send),
-                  onPressed: _isUploading ? null : _sendMessage,
+                  onPressed: _isUploading || _isRecording ? null : _sendMessage,
                   color: const Color(0xFF2C5364),
                 ),
               ],

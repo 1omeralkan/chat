@@ -2,14 +2,27 @@ import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'screens/login_screen.dart';
 import 'screens/chat_screen.dart';
+import 'firebase_options.dart';
 
-void main() async {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Basit Firebase başlatma
-  await Firebase.initializeApp();
+  try {
+    if (Firebase.apps.isEmpty) {
+      await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform,
+      );
+      
+      // Storage ayarlarını yapılandır
+      FirebaseStorage.instance.setMaxUploadRetryTime(const Duration(seconds: 30));
+      FirebaseStorage.instance.setMaxOperationRetryTime(const Duration(seconds: 30));
+    }
+  } catch (e) {
+    print('Firebase başlatma hatası: $e');
+  }
 
   runApp(const MyApp());
 }
@@ -25,10 +38,37 @@ class MyApp extends StatelessWidget {
         primarySwatch: Colors.blue,
         useMaterial3: true,
       ),
-      home: const LoginScreen(),
+      home: const AuthWrapper(),
       routes: {
         '/login': (context) => const LoginScreen(),
         '/chat': (context) => const ChatListScreen(),
+      },
+    );
+  }
+}
+
+class AuthWrapper extends StatelessWidget {
+  const AuthWrapper({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, snapshot) {
+        // Bağlantı bekleniyorsa loading göster
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(
+              child: CircularProgressIndicator(),
+            ),
+          );
+        }
+
+        // Kullanıcı oturum açmışsa ChatListScreen'e, açmamışsa LoginScreen'e yönlendir
+        if (snapshot.hasData) {
+          return const ChatListScreen();
+        }
+        return const LoginScreen();
       },
     );
   }
@@ -121,7 +161,7 @@ class ChatListScreen extends StatelessWidget {
                     print('Email: ${doc.data()['email']}, ID: ${doc.id}');
                   }
 
-                  // Kullanıc��yı e-posta ile ara
+                  // Kullanıcıyı e-posta ile ara
                   final userQuery = await FirebaseFirestore.instance
                       .collection('users')
                       .where('email', isEqualTo: email.toLowerCase())
@@ -157,15 +197,15 @@ class ChatListScreen extends StatelessWidget {
                   final existingChatQuery = await FirebaseFirestore.instance
                       .collection('chat')
                       .where('isGroup', isEqualTo: false)
-                      .where('members', arrayContainsAny: [
+                      .where('participants', arrayContainsAny: [
                     currentUser.uid,
                     otherUserDoc?.id
                   ]).get();
 
                   for (var doc in existingChatQuery.docs) {
-                    final members = List<String>.from(doc['members']);
-                    if (members.contains(currentUser.uid) &&
-                        members.contains(otherUserDoc?.id)) {
+                    final participants = List<String>.from(doc['participants']);
+                    if (participants.contains(currentUser.uid) &&
+                        participants.contains(otherUserDoc?.id)) {
                       if (context.mounted) {
                         Navigator.pop(context);
                         ScaffoldMessenger.of(context).showSnackBar(
@@ -189,14 +229,15 @@ class ChatListScreen extends StatelessWidget {
                   // Yeni sohbet oluştur
                   final docRef =
                       await FirebaseFirestore.instance.collection('chat').add({
-                    'chatName': chatNameController.text.trim(),
+                    'name': chatNameController.text.trim(),
                     'createdAt': FieldValue.serverTimestamp(),
                     'isGroup': isGroup,
                     'createdBy': currentUser.uid,
                     'lastMessage': null,
                     'lastMessageTime': null,
-                    if (!isGroup)
-                      'members': [currentUser.uid, otherUserDoc!.id],
+                    'participants': !isGroup
+                        ? [currentUser.uid, otherUserDoc!.id]
+                        : [currentUser.uid],
                   });
 
                   // Grup üyeleri koleksiyonunu oluştur
@@ -275,66 +316,78 @@ class ChatListScreen extends StatelessWidget {
           : StreamBuilder<QuerySnapshot>(
               stream: FirebaseFirestore.instance
                   .collection('chat')
-                  .orderBy('createdAt', descending: true)
                   .snapshots(),
-              builder: (context, snapshot) {
-                if (snapshot.hasError) {
+              builder: (context, chatSnapshot) {
+                if (chatSnapshot.hasError) {
                   return Center(
-                    child: Text('Bir hata oluştu: ${snapshot.error}'),
+                    child: Text('Bir hata oluştu: ${chatSnapshot.error}'),
                   );
                 }
 
-                if (snapshot.connectionState == ConnectionState.waiting) {
+                if (chatSnapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());
                 }
 
-                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                if (!chatSnapshot.hasData || chatSnapshot.data!.docs.isEmpty) {
                   return const Center(child: Text('Henüz sohbet bulunmuyor'));
                 }
 
-                return ListView.builder(
-                  itemCount: snapshot.data!.docs.length,
-                  itemBuilder: (context, index) {
-                    final chat = snapshot.data!.docs[index];
-                    String createdAtText;
-
-                    try {
-                      final createdAt = chat['createdAt'];
-                      if (createdAt is Timestamp) {
-                        createdAtText = createdAt.toDate().toString();
-                      } else if (createdAt == null) {
-                        createdAtText = 'Belirsiz';
-                      } else {
-                        createdAtText = createdAt.toString();
-                      }
-                    } catch (e) {
-                      createdAtText = 'Belirsiz';
+                return FutureBuilder<List<QueryDocumentSnapshot>>(
+                  future: _filterUserChats(chatSnapshot.data!.docs, currentUser.uid),
+                  builder: (context, filteredChatsSnapshot) {
+                    if (filteredChatsSnapshot.connectionState == ConnectionState.waiting) {
+                      return const Center(child: CircularProgressIndicator());
                     }
 
-                    // Sohbet adını güvenli bir şekilde al
-                    final chatName =
-                        (chat['chatName'] as String?) ?? 'İsimsiz Sohbet';
-                    final firstLetter =
-                        chatName.isNotEmpty ? chatName[0].toUpperCase() : '?';
+                    if (!filteredChatsSnapshot.hasData || filteredChatsSnapshot.data!.isEmpty) {
+                      return const Center(child: Text('Henüz sohbetiniz bulunmuyor'));
+                    }
 
-                    return ListTile(
-                      title: Text(chatName),
-                      subtitle: Text('Oluşturulma: $createdAtText'),
-                      leading: CircleAvatar(
-                        child: Text(firstLetter),
-                      ),
-                      trailing: chat['isGroup']
-                          ? const Icon(Icons.group)
-                          : const Icon(Icons.person),
-                      onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => ChatScreen(
-                              chatId: chat.id,
-                              chatName: chatName,
-                            ),
+                    final chats = filteredChatsSnapshot.data!;
+                    
+                    return ListView.builder(
+                      itemCount: chats.length,
+                      itemBuilder: (context, index) {
+                        final chat = chats[index];
+                        final data = chat.data() as Map<String, dynamic>;
+                        String createdAtText;
+
+                        try {
+                          final createdAt = data['createdAt'];
+                          if (createdAt is Timestamp) {
+                            createdAtText = createdAt.toDate().toString();
+                          } else if (createdAt == null) {
+                            createdAtText = 'Belirsiz';
+                          } else {
+                            createdAtText = createdAt.toString();
+                          }
+                        } catch (e) {
+                          createdAtText = 'Belirsiz';
+                        }
+
+                        final chatName = data['name'] as String? ?? 'İsimsiz Sohbet';
+                        final firstLetter = chatName.isNotEmpty ? chatName[0].toUpperCase() : '?';
+
+                        return ListTile(
+                          title: Text(chatName),
+                          subtitle: Text('Oluşturulma: $createdAtText'),
+                          leading: CircleAvatar(
+                            child: Text(firstLetter),
                           ),
+                          trailing: data['isGroup'] == true
+                              ? const Icon(Icons.group)
+                              : const Icon(Icons.person),
+                          onTap: () {
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => ChatScreen(
+                                  chatId: chat.id,
+                                  chatName: chatName,
+                                ),
+                              ),
+                            );
+                          },
                         );
                       },
                     );
@@ -349,5 +402,30 @@ class ChatListScreen extends StatelessWidget {
               child: const Icon(Icons.add),
             ),
     );
+  }
+
+  // Kullanıcının üyesi olduğu sohbetleri filtrele
+  Future<List<QueryDocumentSnapshot>> _filterUserChats(
+    List<QueryDocumentSnapshot> chats, 
+    String userId
+  ) async {
+    List<QueryDocumentSnapshot> userChats = [];
+    
+    for (var chat in chats) {
+      // Her sohbetin groupMember koleksiyonunu kontrol et
+      final members = await FirebaseFirestore.instance
+          .collection('chat')
+          .doc(chat.id)
+          .collection('groupMember')
+          .where('userID', isEqualTo: userId)
+          .get();
+      
+      // Eğer kullanıcı bu sohbetin üyesiyse listeye ekle
+      if (members.docs.isNotEmpty) {
+        userChats.add(chat);
+      }
+    }
+    
+    return userChats;
   }
 }

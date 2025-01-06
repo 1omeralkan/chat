@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'register_screen.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:async';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -15,76 +16,105 @@ class _LoginScreenState extends State<LoginScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _isLoading = false;
+  String? _errorMessage;
 
   Future<void> _createUserInFirestore(User user) async {
-    // Kullanıcının Firestore'da olup olmadığını kontrol et
-    final userDoc = await FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .get();
+    try {
+      // Kullanıcının Firestore'da olup olmadığını kontrol et
+      final userDoc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
 
-    // Eğer kullanıcı Firestore'da yoksa ekle
-    if (!userDoc.exists) {
-      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
-        'identifier': user.email,
-        'name': user.displayName ??
-            user.email?.split('@')[0] ??
-            'İsimsiz Kullanıcı',
-        'createdAt': FieldValue.serverTimestamp(),
-      });
+      // Eğer kullanıcı Firestore'da yoksa ekle
+      if (!userDoc.exists) {
+        await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+          'email': user.email?.toLowerCase(),  // 'identifier' yerine 'email' kullan
+          'displayName': user.displayName ?? user.email?.split('@')[0] ?? 'İsimsiz Kullanıcı',
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      }
+    } catch (e) {
+      print('Firestore Error: $e');
     }
   }
 
-  Future<void> _login() async {
-    if (_formKey.currentState!.validate()) {
-      setState(() => _isLoading = true);
+  Future<void> _signIn() async {
+    if (!_formKey.currentState!.validate()) return;
 
-      try {
-        final userCredential =
-            await FirebaseAuth.instance.signInWithEmailAndPassword(
-          email: _emailController.text.trim(),
-          password: _passwordController.text,
-        );
+    try {
+      setState(() {
+        _isLoading = true;
+        _errorMessage = null;
+      });
 
-        // Kullanıcıyı Firestore'a ekle/güncelle
+      print('Giriş denemesi başladı: ${_emailController.text.trim()}');
+      
+      // Firebase Auth durumunu kontrol et
+      print('Firebase Auth durumu: ${FirebaseAuth.instance.currentUser}');
+      
+      // Giriş yap - timeout süresini artırdık
+      final userCredential = await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
+      ).timeout(
+        const Duration(seconds: 30),  // Timeout süresini 30 saniyeye çıkardık
+        onTimeout: () {
+          print('Giriş işlemi zaman aşımına uğradı');
+          throw TimeoutException('Giriş işlemi zaman aşımına uğradı. Lütfen internet bağlantınızı kontrol edin.');
+        },
+      );
+
+      print('Giriş başarılı: ${userCredential.user?.email}');
+
+      // Firestore'a kullanıcı bilgilerini kaydet
+      if (userCredential.user != null) {
+        print('Firestore\'a kullanıcı kaydediliyor...');
         await _createUserInFirestore(userCredential.user!);
-
-        if (mounted) {
-          Navigator.pushReplacementNamed(context, '/chat');
-
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Giriş başarılı!'),
-              backgroundColor: Colors.green,
-            ),
-          );
-        }
-      } on FirebaseAuthException catch (e) {
-        String errorMessage;
-        switch (e.code) {
-          case 'user-not-found':
-            errorMessage = 'Kullanıcı bulunamadı';
-            break;
-          case 'wrong-password':
-            errorMessage = 'Hatalı şifre';
-            break;
-          case 'invalid-email':
-            errorMessage = 'Geçersiz e-posta adresi';
-            break;
-          default:
-            errorMessage = e.message ?? 'Giriş başarısız';
-        }
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(errorMessage),
-            backgroundColor: Colors.red,
-          ),
-        );
-      } finally {
-        if (mounted) {
-          setState(() => _isLoading = false);
-        }
+        print('Kullanıcı Firestore\'a kaydedildi');
       }
+
+      if (mounted) {
+        Navigator.pushReplacementNamed(context, '/chat');
+      }
+    } on FirebaseAuthException catch (e) {
+      print('Firebase Auth Error: ${e.code} - ${e.message}');
+      setState(() {
+        _errorMessage = _getErrorMessage(e.code);
+      });
+    } on TimeoutException catch (e) {
+      print('Timeout Error: $e');
+      setState(() {
+        _errorMessage = e.message ?? 'Bağlantı zaman aşımına uğradı';
+      });
+    } catch (e) {
+      print('Genel Hata: $e');
+      setState(() {
+        _errorMessage = 'Bir hata oluştu: $e';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  String _getErrorMessage(String code) {
+    switch (code) {
+      case 'user-not-found':
+        return 'Kullanıcı bulunamadı';
+      case 'wrong-password':
+        return 'Hatalı şifre';
+      case 'invalid-email':
+        return 'Geçersiz e-posta adresi';
+      case 'network-request-failed':
+        return 'İnternet bağlantısı hatası';
+      case 'too-many-requests':
+        return 'Çok fazla deneme yapıldı. Lütfen daha sonra tekrar deneyin.';
+      default:
+        return 'Giriş başarısız: $code';
     }
   }
 
@@ -137,7 +167,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
-                    onPressed: _isLoading ? null : _login,
+                    onPressed: _isLoading ? null : _signIn,
                     child: _isLoading
                         ? const CircularProgressIndicator()
                         : const Text('Giriş Yap'),

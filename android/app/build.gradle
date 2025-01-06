@@ -24,12 +24,14 @@ android {
         // Benzersiz uygulama ID
         applicationId = "com.example.deneme_chat_app"
 
-        // minSdkVersion 23 olarak güncellendi
-        minSdkVersion 23
+        // minSdkVersion 19 olarak güncellendi
+        minSdkVersion flutter.minSdkVersion
         targetSdkVersion 34
 
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        multiDexEnabled true
     }
 
     buildTypes {
@@ -48,5 +50,7 @@ flutter {
 dependencies {
     // ... diğer bağımlılıklar
     implementation platform('com.google.firebase:firebase-bom:32.7.4')
+    implementation 'com.google.firebase:firebase-auth'
     implementation 'com.google.firebase:firebase-firestore'
+    implementation "androidx.multidex:multidex:2.0.1"
 }
